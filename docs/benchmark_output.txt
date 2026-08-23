@@ -1,0 +1,32 @@
+=== live_multicast_demo.exe 2000000 (after the live_feed.hpp refactor) ===
+Joined multicast group 239.255.10.10:30001. Starting publisher for 2000000 messages...
+
+=== Live UDP Multicast Demo (batched) ===
+Sent:              2000000 messages
+Received:          2000000 messages in 48438 datagrams (avg 41.3 msgs/datagram)
+Loss:              0.0000%
+Duration:          5.345 s  (374199 msgs/sec observed on the wire)
+
+Send-to-decode latency (actual OS network stack + decode, in this process):
+network+decode               n=2000000    mean=   78877ns  p50=   73300ns  p90=   90400ns  p99=  157500ns  p99.9=   223800ns  max=  19079400ns
+
+=== decoder_bench.exe 20000000 8 (offline, network bypassed) ===
+Generating 20000000 messages across 512 instruments...
+Starting 8 normalizer worker threads...
+Dispatching...
+
+=== Decoder + Normalizer Benchmark ===
+Messages dispatched:        20000000
+Messages processed:         20000000 (dropped_full=1036408)
+Wall time:                  1.176 s
+Throughput:                 17008323 msgs/sec  (8 shards)
+
+Per-message processing latency (decode + book update, single message):
+proc_latency                 n=20000000   mean=     401ns  p50=     200ns  p90=     500ns  p99=     900ns  p99.9=     1500ns  max= 138409300ns
+
+End-to-end latency (dispatch enqueue -> book updated):
+e2e_latency                  n=20000000   mean=206175331ns  p50=229212300ns  p90=402565900ns  p99=555322700ns  p99.9=560959500ns  max= 561651400ns
+
+(Instrument order books use a bounds-checked fixed-size price-level
+ array; see order_book.hpp for the dropped-update counter if a price
+ ever moved outside the pre-sized band.)

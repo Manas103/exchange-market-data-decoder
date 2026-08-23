@@ -80,6 +80,20 @@ public:
     int64_t best_ask_qty() const { return has_ask() ? ask_qty_[best_ask_idx_] : 0; }
     uint64_t dropped() const { return dropped_; }
 
+    // Raw contiguous level arrays. Added for the Python binding: nanobind
+    // wraps these pointers in a NumPy array whose buffer IS this book's
+    // storage, so Python reads the live aggregated depth with no copy and no
+    // per-call allocation. Exposing the pointer is the whole point; the
+    // lifetime contract (the view is valid only while the owning feed object
+    // is alive) is documented on the Python side and enforced by nanobind's
+    // owner keep-alive.
+    const int64_t* bid_data() const { return bid_qty_.data(); }
+    const int64_t* ask_data() const { return ask_qty_.data(); }
+    static constexpr int levels() { return kLevels; }
+    int64_t base_price_ticks() const { return base_price_; }
+    int best_bid_index() const { return best_bid_idx_; }
+    int best_ask_index() const { return best_ask_idx_; }
+
     int64_t qty_at(Side side, int64_t price_ticks) const {
         int idx = index_of(price_ticks);
         if (idx < 0 || idx >= kLevels) return 0;

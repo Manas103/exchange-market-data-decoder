@@ -1,0 +1,32 @@
+==============================================================================
+1. Live UDP multicast, publisher and decoder driven from Python
+==============================================================================
+Instruments with a book:   512
+Sent:                      2,000,000 messages
+Received:                  2,000,000 messages in 48,438 datagrams (avg 41.3 msgs/datagram)
+Loss:                      0.0000%
+Duration:                  5.825 s  (343,322 msgs/sec observed on the wire)
+Send-to-decode latency:    p50=74,700ns  p90=91,500ns  p99=159,100ns  p99.9=225,300ns
+Resting quantity in books: 184,470,496 across 203,698 occupied price levels
+
+==============================================================================
+2. Cost of exposing full depth to Python: view versus copy
+==============================================================================
+Books:                     512 instruments x 2 sides x 16,384 levels = 134.2 MB of level data
+Zero-copy sweep:           313.3 us total, 306 ns per view
+Materialized sweep:        5,573.9 us total, 5,443 ns per copy
+Ratio:                     17.8x  (bytes copied: 0 versus 134.2 MB)
+
+==============================================================================
+3. Same comparison for the latency vector (one big buffer)
+==============================================================================
+Samples:                   2,000,000 uint64 (16.0 MB)
+Zero-copy handoff:         300 ns
+Materialized copy:         1,811,000 ns
+Ratio:                     6,037x
+
+Note: the ratios above are the cost of the handoff, not of the analysis that
+follows it. Reducing over a view and reducing over a copy cost the same once
+the copy exists. What the binding removes is the allocation and the memcpy on
+every single access, which is what makes polling a live book from Python
+viable at all.

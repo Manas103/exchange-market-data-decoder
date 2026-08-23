@@ -13,3 +13,10 @@ CMakeScripts/
 cmake_install.cmake
 Makefile
 .vs/
+
+# Python
+__pycache__/
+*.pyc
+*.pyd
+.pytest_cache/
+venv/

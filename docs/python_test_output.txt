@@ -1,0 +1,24 @@
+============================= test session starts =============================
+platform win32 -- Python 3.12.10, pytest-9.1.0, pluggy-1.6.0 -- C:\Users\Manas\AppData\Local\Programs\Python\Python312\python.exe
+cachedir: .pytest_cache
+rootdir: C:\Users\Manas\Downloads\Total Job Application process flow
+configfile: pytest.ini
+plugins: anyio-4.14.1
+collecting ... collected 14 items
+
+python\tests\test_zero_copy.py::test_buffer_address_equals_cpp_array_address PASSED [  7%]
+python\tests\test_zero_copy.py::test_repeated_calls_return_the_same_memory PASSED [ 14%]
+python\tests\test_zero_copy.py::test_views_are_read_only PASSED          [ 21%]
+python\tests\test_zero_copy.py::test_view_keeps_the_feed_alive PASSED    [ 28%]
+python\tests\test_zero_copy.py::test_view_tracks_the_book_without_being_refetched PASSED [ 35%]
+python\tests\test_zero_copy.py::test_instrument_id_is_bounds_checked PASSED [ 42%]
+python\tests\test_zero_copy.py::test_sharded_books_match_reference_over_the_cpp_window PASSED [ 50%]
+python\tests\test_zero_copy.py::test_sharded_books_match_reference_over_full_depth PASSED [ 57%]
+python\tests\test_zero_copy.py::test_top_of_book_derived_in_numpy_matches_cpp PASSED [ 64%]
+python\tests\test_zero_copy.py::test_locked_and_crossed_books_are_a_property_of_the_feed_not_the_decoder PASSED [ 71%]
+python\tests\test_zero_copy.py::test_no_negative_quantities PASSED       [ 78%]
+python\tests\test_zero_copy.py::test_live_multicast_run_from_python_loses_nothing PASSED [ 85%]
+python\tests\test_zero_copy.py::test_latency_view_is_also_zero_copy PASSED [ 92%]
+python\tests\test_zero_copy.py::test_midrun_snapshot_equals_final_book XFAIL [100%]
+
+======================== 13 passed, 1 xfailed in 7.07s ========================
