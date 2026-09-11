@@ -1,0 +1,9 @@
+=== Seeded trade-through injection ===
+Scenarios constructed: 2000 / 2000 requested
+Caught by guard:        2000 / 2000
+
+=== Clean sessions (false-positive check) ===
+Sessions: 40, orders per session: 50, total clean orders: 1500
+False positives: 0
+
+PASS: all fault-injection checks passed.

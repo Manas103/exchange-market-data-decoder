@@ -1,0 +1,14 @@
+Running 700000 book updates per venue across 3 venues (2100000 total updates)...
+
+=== Cross-Venue NBBO Republish Benchmark ===
+Venues: 3
+Venue book updates: 2100000
+
+NBBO republish latency (recompute best bid/offer + locked/crossed classify, per update):
+nbbo_republish               n=2100000    mean=      20ns  p50=      20ns  p90=      20ns  p99=      60ns  p99.9=      110ns  max=     46412ns
+
+Locked-quote pair-events observed:  0
+Crossed-quote pair-events observed: 0
+Venue 0 dropped-update counter: 747139
+Venue 1 dropped-update counter: 747292
+Venue 2 dropped-update counter: 747333

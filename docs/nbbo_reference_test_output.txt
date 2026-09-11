@@ -1,0 +1,9 @@
+NBBO diff: 7200 comparisons, 0 mismatches.
+Locked/crossed diff: 3600 comparisons, 0 mismatches (locked pairs seen=0, crossed pairs seen=0).
+Venue 0 dropped-update counter: 96171
+Venue 1 dropped-update counter: 96074
+Venue 2 dropped-update counter: 96154
+Explicit locked case: venue 0 bid 250.10 vs venue 1 offer 250.10 -> classified Locked.
+Explicit crossed case: venue 0 bid 250.20 vs venue 1 offer 250.05 -> classified Crossed.
+
+PASS: cross-venue NBBO matches the from-scratch oracle exactly; locked/crossed classification matches an independently derived pairing exactly.

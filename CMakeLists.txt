@@ -21,6 +21,14 @@ add_executable(correctness_test tests/correctness_test.cpp)
 add_executable(backtest_cli src/backtest_cli.cpp)
 add_executable(queue_position_reference_test tests/queue_position_reference_test.cpp)
 
+# Cross-venue NBBO consolidator and trade-through guard (see README,
+# "Extended: Cross-Venue NBBO Consolidator"). Portable standard C++, no
+# Winsock dependency, so these three build and run under WSL2 unlike
+# live_multicast_demo below.
+add_executable(nbbo_bench src/nbbo_bench.cpp)
+add_executable(nbbo_fault_injection src/nbbo_fault_injection.cpp)
+add_executable(nbbo_reference_test tests/nbbo_reference_test.cpp)
+
 add_executable(live_multicast_demo src/live_multicast_demo.cpp)
 if(WIN32)
   target_link_libraries(live_multicast_demo ws2_32)

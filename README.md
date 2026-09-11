@@ -5,8 +5,11 @@ core ideas behind Nasdaq-style ITCH protocols: a compact, fixed-width message
 stream describing order-book events (add, execute, cancel, delete, replace),
 decoded into full-depth limit order books for 512 instruments by a sharded,
 multithreaded normalizer, with a nanobind extension that hands Python live
-full-depth views of those books without copying a byte. Every number in this
-README was measured on the machine described below, not targeted. The one
+full-depth views of those books without copying a byte. Extended with a
+queue-position backtest simulator and, most recently, a cross-venue NBBO
+consolidator and trade-through guard modeling Regulation NMS Rules 611 and
+610(e) over three simulated venues. Every number in this README was measured
+on the machine described below, not targeted. The one
 number that is not a throughput figure is the one worth reading first: the
 NumPy buffer address returned by `bid_depth(i)` is asserted equal to the
 address of the C++ level array, which is the only evidence that "zero copy"
@@ -585,6 +588,180 @@ python3 python/analyze_backtest.py /tmp/backtest_results.csv
 no Winsock dependency), but the runs reported here were made under WSL2 for
 a faster edit-build-measure loop.
 
+## Extended (Sep. 2026): Cross-Venue NBBO Consolidator & Trade-Through Guard
+
+**Not real Regulation NMS.** This is the market-structure arithmetic Rule 611
+(trade-through) and Rule 610(e) (locked and crossed markets) are about,
+implemented against three simulated venues, not the real rule text and not a
+connection to any real exchange.
+
+**What existed before this extension and what is new.** The base decoder and
+normalizer already give a single venue's full-depth book. Nothing in the
+repo, before this, ever looked at more than one venue at once. This
+extension adds exactly that layer: three independent simulated venues each
+quoting the same synthetic symbol, a consolidator that computes the National
+Best Bid and Offer across them, a locked/crossed classifier, and an outbound
+order guard that refuses to send an order through a better protected price
+sitting at another venue.
+
+### Architecture (additions)
+
+```
+include/venue_feed.hpp          One simulated venue: MarketSimulator's order
+                                 flow replayed into one OrderBook, with the
+                                 order_id -> (side, price, qty) bookkeeping a
+                                 standalone book needs for Cancel/Execute/
+                                 Delete/Replace (normalizer.hpp carries the
+                                 same bookkeeping per-shard; this is the
+                                 single-book version).
+include/nbbo.hpp                NbboAggregator::best_bid/best_offer (the
+                                 consolidated NBBO across N venues) and
+                                 ::classify (every distinct-venue bid/offer
+                                 pair that is locked or crossed), plus an
+                                 O(kLevels) from-scratch oracle for both.
+include/trade_through_guard.hpp Given a candidate outbound order and the
+                                 current NBBO, decides accept/reject: a buy
+                                 above the NBBO offer or a sell below the
+                                 NBBO bid is a trade-through and is rejected.
+src/nbbo_bench.cpp               Benchmark: NBBO republish latency, one venue
+                                 update at a time.
+src/nbbo_fault_injection.cpp     2,000 seeded trade-through scenarios plus 40
+                                 clean sessions, counting catches and false
+                                 positives.
+tests/nbbo_reference_test.cpp    NBBO and locked/crossed diff against an
+                                 independent from-scratch oracle over a long
+                                 random replay, plus two hand-built explicit
+                                 locked and crossed cases (see Findings).
+```
+
+The trade-through guard is deliberately a pure function of (candidate order,
+current NBBO), not a stateful component: `guard(order, nbbo) -> accept |
+reject(reason)`. That keeps it trivially unit-testable and keeps the
+question "would this specific order have traded through" answerable without
+replaying anything.
+
+### Validation
+
+Two independent layers, run under both a Release build and an ASan+UBSan
+Debug build (`docs/nbbo_reference_test_san.txt`,
+`docs/nbbo_fault_injection_san.txt`, `docs/nbbo_bench_san.txt`):
+
+1. **Oracle diff.** `NbboAggregator::best_bid`/`best_offer` read each venue's
+   incrementally maintained best-bid/best-ask index. `oracle_best_bid`/
+   `oracle_best_ask` instead scan all 16,384 price levels of that venue's
+   book from scratch. `classify()` is diffed the same way, against a
+   from-scratch pairwise classification built directly from the oracle
+   quotes. 7,200 NBBO comparisons and 3,600 locked/crossed comparisons over
+   a 90,000-message-per-venue replay, 0 mismatches
+   (`docs/nbbo_reference_test_output.txt`).
+2. **Explicit positive locked/crossed cases.** The random replay above
+   essentially never produces a naturally locked or crossed market (three
+   independent random walks around the same reference price rarely invert;
+   see the `locked pairs seen=0, crossed pairs seen=0` line in the same
+   output). An oracle diff over data that never contains the case it is
+   supposed to check proves nothing about that case, so two hand-built
+   books are also checked directly against `classify()`: a bid at 250.10 on
+   venue 0 against an offer at 250.10 on venue 1 (locked), and a bid at
+   250.20 on venue 0 against an offer at 250.05 on venue 1 (crossed). Both
+   are correctly named.
+3. **Seeded fault injection.** `nbbo_fault_injection` constructs exactly
+   2,000 orders engineered to trade through the NBBO and 40 sessions of
+   1,500 total clean orders that never should. Every seeded trade-through is
+   caught; zero clean orders are rejected (`docs/nbbo_fault_injection_output.txt`).
+
+### Findings
+
+**A packed-struct alignment bug UBSan caught on its first run of this code,
+before the sanitizer had ever been run on this repository at all.**
+`WireMsg`'s variants are `#pragma pack(1)` (`protocol.hpp`), which is
+correct for a wire format: no compiler-inserted padding between fields.
+`VenueFeed::apply` originally read fields like `m.add.order_id` straight
+through as the argument to `unordered_map::operator[]`/`::find`, and
+`m.exec.exec_qty` straight into `std::min`. Both bind a `const T&` parameter
+to the packed field. That is undefined behavior: the reference's declared
+type (`const uint64_t&`, `const uint32_t&`) carries no record that the
+object underneath is only byte-aligned, so the compiler is entitled to
+assume natural alignment for anything accessed through it, and UBSan checks
+exactly that assumption. The first sanitizer run of `nbbo_reference_test`
+failed immediately with "reference binding to misaligned address ...
+which requires 8 byte alignment" inside `VenueFeed::apply`, and a second
+pass (after fixing the `order_id` sites) turned up the identical class of
+bug one level down, inside `std::min`'s own reference parameters for
+`exec_qty`/`cancel_qty`. The fix in both cases is the same: copy the packed
+field into a local, naturally-aligned variable before it is used anywhere a
+reference could be bound to it, which is what `venue_feed.hpp` now does at
+every such call site. This never crashed on x86-64, which tolerates
+unaligned scalar loads at the hardware level; it is exactly the kind of bug
+that is silent here and not silent on a stricter target, and the reason to
+run the sanitizer is to find it before that target does. The same
+read-a-packed-field-into-an-unordered_map-key pattern already exists in the
+base repo's `normalizer.hpp` for the identical reason; it is not touched
+here because it is out of scope for this extension, but it is the same bug
+and would fail the same way under a sanitizer.
+
+**Locked and crossed markets are structurally rare in this synthetic
+setup.** With three venues doing independent random walks around one shared
+reference price, a bid at one venue overtaking an offer at another is a
+low-probability event; across roughly 2.4 million total book updates in the
+reference test and benchmark runs combined, exactly zero occurred. The guard
+and classifier are proven correct against explicit constructed cases (above)
+rather than relying on chance occurrence in random synthetic data, and that
+is disclosed rather than left implicit.
+
+### Measured results
+
+Machine: AMD Ryzen 7 7800X3D, WSL2 Ubuntu 22.04 (12 logical cores visible to
+WSL under its `.wslconfig` cap; 8 physical / 16 logical on the host), Windows
+11 build 10.0.26200, g++ 11.4.0 with `-O3`, CMake 3.22.1. Raw output in
+`docs/`.
+
+| Claim | Target | Measured | Meets claim |
+|---|---|---|---|
+| Cross-venue NBBO consolidation | 3 simulated venues | **3** venues, 7,200 NBBO comparisons vs. oracle, 0 mismatches | Yes |
+| NBBO republish latency | p99 < 2us from a venue update | **p99 60ns** (mean 20ns, max 46,412ns) over 2.1M venue updates | Yes |
+| Locked and crossed quote detection | implemented and correct | 3,600 oracle comparisons + 2 explicit hand-built cases, 0 mismatches; 0 naturally-occurring cases in the synthetic replay (see Findings) | Yes (disclosed: not exercised by chance in random data) |
+| Trade-through guard | rejects orders that would trade through | Implemented as a pure function of (order, NBBO); see fault injection below | Yes |
+| Seeded trade-throughs caught | 2,000 / 2,000 | **2,000 / 2,000** | Yes |
+| False positives over clean sessions | 0 over 40 sessions | **0** over 40 sessions, 1,500 clean orders | Yes |
+
+The republish-latency benchmark measures the cost of one call to
+`best_bid`/`best_offer`/`classify` after a single venue's book changes; it
+does not include the cost of decoding the wire message that caused the
+change (that is `decoder_bench`'s number, reported above) or any network
+hop. `max=46,412ns` on one update out of 2.1 million is consistent with an
+OS scheduling preemption on a shared machine, not a property of the
+algorithm; p99.9 is 110ns.
+
+### Building and running
+
+```bash
+# WSL2 Ubuntu 22.04, g++ 11.4
+mkdir -p build && cd build
+cmake -DCMAKE_BUILD_TYPE=Release ..
+make -j"$(( $(nproc) / 2 ))" nbbo_reference_test nbbo_fault_injection nbbo_bench
+
+./nbbo_reference_test        # oracle diff + explicit locked/crossed cases
+./nbbo_fault_injection       # 2,000 seeded trade-throughs + 40 clean sessions
+./nbbo_bench                 # republish latency
+
+cd ..
+```
+
+ASan+UBSan build (the one that found the alignment bug above):
+
+```bash
+mkdir -p ~/build/emdd-san && cd ~/build/emdd-san
+cmake /path/to/exchange-market-data-decoder \
+  -DCMAKE_BUILD_TYPE=Debug \
+  -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer -g -O1" \
+  -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=address,undefined"
+make -j"$(( $(nproc) / 2 ))" nbbo_reference_test nbbo_fault_injection nbbo_bench
+./nbbo_reference_test && ./nbbo_fault_injection && ./nbbo_bench 50000
+```
+
+These three targets are portable standard C++ with no Winsock dependency, so
+unlike `live_multicast_demo` they build and run under WSL2 directly.
+
 ## Layout
 
 See the Architecture section.
@@ -593,8 +770,20 @@ See the Architecture section.
 
 - Simplified ITCH-style protocol, not the real Nasdaq ITCH 5.0 spec.
 - Synthetic order flow, not a captured real exchange feed.
-- Windows and Winsock only network layer; no Linux backend was built or tested,
-  and consequently no ASan or TSan runs are committed for this repo.
+- Windows and Winsock only network layer for the original decoder and live
+  multicast demo; no Linux backend was built or tested for those, and
+  consequently no ASan or TSan runs are committed for them. The NBBO/
+  trade-through extension is portable standard C++ and does have committed
+  ASan+UBSan runs (see above).
+- The NBBO layer's "three simulated venues" are three independent random
+  walks around one shared reference price, not three feeds of the same
+  real symbol; locked and crossed markets never occurred naturally in the
+  measured runs and are proven correct via explicit constructed cases
+  instead (see Findings).
+- The trade-through guard evaluates one order against the NBBO at the
+  instant it is called; it does not model network latency between venues,
+  so it cannot detect a trade-through caused by a stale NBBO view during
+  the guard's own decision window.
 - Reads through the binding while the feed is running are unsynchronized. They
   are useful for monitoring and wrong for anything that needs a consistent
   snapshot. A sequence-lock per book would fix this and is not implemented.
