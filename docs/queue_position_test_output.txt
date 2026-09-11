@@ -1,0 +1,5 @@
+PASS: hand-computed scenario, 6 steps, all exact.
+Long replay: 80000 messages, 491087 ahead-qty comparisons, 0 fills observed, 0 mismatches.
+PASS: fast incremental tracker matches the from-scratch oracle exactly.
+
+ALL QUEUE-POSITION REFERENCE CHECKS PASSED.

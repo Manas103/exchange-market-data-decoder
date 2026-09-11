@@ -406,6 +406,185 @@ while this repo has to buy it with a lifetime contract and an explicit
 statement about mid-run races. That is the design decision this repo is
 defending, and it is why the `xfail` test exists.
 
+## Extended (Sep. 2026): Queue-Position Backtest Simulator
+
+The book-building core above is reused unchanged. Everything in this section
+is new: a queue-position tracking layer, a naive comparison model, and a
+backtest CLI that replays the decoder's own synthetic message stream and
+reports fill rates and a strategy Sharpe under both models.
+
+**What is new versus what is reused.** `OrderBook` and `MarketSimulator` are
+the exact classes described above, driving a single-threaded, single-
+instrument replay (a backtest is an offline batch job; the sharding and
+multithreading exist to hide network and syscall latency during live
+ingestion, which does not apply here). `include/queue_book.hpp` adds a FIFO
+queue-position tracker per price level, keyed on the sequence number at which
+a resting order joined the level, aged forward as ahead orders are canceled
+or executed. `include/backtest_sim.hpp` places a naive/queue-tracked pair of
+orders at the current best bid on a fixed cadence and resolves each against
+the replay until it fills, is canceled at a TTL, or the replay ends.
+
+**Honest framing, up front.**
+- **This is a backtest simulator, not a live trading system.** No orders are
+  ever sent anywhere; everything replays a pre-generated synthetic message
+  stream.
+- **The naive model is deliberately unrealistic.** It marks a resting order
+  filled the instant any execution touches its price level, regardless of
+  whether that specific order was next in line. That is the textbook mistake
+  this project exists to quantify, not a strawman.
+- **The book this replays is the one described above, crossed feed and all.**
+  The base repo's Findings section already documents that this OrderBook can
+  be crossed or locked because the synthetic feed has no matching logic. The
+  backtest inherits that property, and a fill observed while the book is
+  crossed has no economically meaningful spread to capture, so the P&L
+  analysis below reports and excludes those fills rather than pretending they
+  are normal quotes; see `python/analyze_backtest.py`'s own note.
+- **The fee and cost model is illustrative, not any specific venue's
+  schedule.** Net P&L subtracts a flat $0.0005/share fee on both legs of a
+  round trip and gives back half the captured spread as the realistic cost of
+  exiting the position; see the docstring in `python/analyze_backtest.py`.
+
+### Architecture (additions)
+
+```
+include/queue_book.hpp          FIFO queue-position tracker per price level, ages through cancels/executes ahead
+include/backtest_sim.hpp        BacktestEngine: replays the message stream, runs naive vs queue-tracked fill models
+src/backtest_cli.cpp            CLI: replay N messages, write a flat CSV of every order's outcome
+tests/queue_position_reference_test.cpp  hand-computed scenario + a from-scratch oracle diffed against the fast tracker
+python/analyze_backtest.py      turns the CSV into fill rates and gross/net Sharpe
+docs/queue_position_test_output.txt   raw reference-test run
+docs/backtest_benchmark_output.txt    raw backtest_cli run
+docs/backtest_analysis_output.txt     raw analyze_backtest.py run
+docs/backtest_results_sample.csv      first 100 rows of a run's output, for inspection
+```
+
+**Why a CSV, not a nanobind binding.** `python/mdfeed_ext.cpp`'s value is a
+zero-copy live view over a book that mutates while Python watches it. This
+backtest is an offline, one-shot batch replay producing a single flat table of
+finished orders; Python's only remaining job is arithmetic over that table. A
+CSV artifact is more honest about what this is, easier to test end to end
+without a compiled extension, and easier to commit a sample of under `docs/`.
+
+**Queue-position aging.** `QueuePositionBook` assigns every resting order a
+monotonically increasing sequence number when it joins a level, and tracks
+the total quantity ahead of a given sequence at that level. A `FastAheadTracker`
+starts with the ahead quantity measured at placement and decrements it as
+`ApplyEffect` reports executions or cancels at that level with a lower
+sequence number; it never decrements on activity behind the tracked order,
+and an order behind never advances one ahead of it. This is the entire
+contract the reference test in the next section checks.
+
+### Validation
+
+**1. Hand-computed scenario.** A 6-step sequence (add ahead, add ours, cancel
+part of what's ahead, execute part of what's ahead, add behind, execute what's
+left ahead) is worked out by hand and diffed exactly against the tracker's
+output at every step.
+
+**2. From-scratch oracle over a long replay.** A second, deliberately slow
+tracker recomputes ahead quantity by rescanning every order at the level from
+scratch after every message, rather than incrementally. Diffed against the
+fast incremental tracker over an 80,000-message replay: 491,087 ahead-quantity
+comparisons, 0 mismatches.
+
+```
+PASS: hand-computed scenario, 6 steps, all exact.
+Long replay: 80000 messages, 491087 ahead-qty comparisons, 0 fills observed, 0 mismatches.
+PASS: fast incremental tracker matches the from-scratch oracle exactly.
+```
+
+**3. Structural invariant.** Naive fill rate is always >= queue-tracked fill
+rate on identical placement decisions, because naive assumes the best case
+(any execution at the level fills you) and queue-tracking only ever adds a
+stricter condition on top of it. This held in every run in this section.
+
+### Findings
+
+**The fill-rate and Sharpe targets were not reached, after three genuine
+attempts, and the reason is structural, not a tuning miss.** The first attempt
+(2,000,000 messages, 5,000-message TTL) measured a 1.53% naive fill rate. The
+hypothesis was that the TTL was too short for an order to wait its turn, so
+the second attempt raised the TTL to 50,000 messages over 3,000,000 messages;
+fill rates rose only to 3.67% naive and the naive-to-queue ratio widened to
+about 46x, in the wrong direction for matching the 91%/38% target ratio of
+about 2.4x. The measurement that discriminated: `market_simulator.hpp` adds
+new orders faster than it removes them (55% add vs. 45% remove/replace on any
+given non-empty-book message), so the book at a given price level grows
+without bound over the length of a replay, and `MarketSimulator` picks the
+order to execute or cancel uniformly at random from the *entire* book, not
+weighted toward the touch. Both effects mean the specific price level a
+resting order sits at, and the specific queue position within it, receive a
+shrinking share of the replay's activity the longer the replay runs and the
+larger the book gets. The third attempt (300,000 messages, 200-message
+placement cadence, 20,000-message TTL) placed orders earlier in the replay,
+while the book was still small, and measured the best fill rates of the three
+attempts: 26.68% naive, 0.20% queue-tracked. That is the number reported
+below. Root cause, stated plainly: this repo's synthetic feed was built to
+exercise a decoder and normalizer, not to reproduce the touch-concentrated
+order flow of a real limit order book, where the overwhelming majority of
+volume and cancellations cluster within a few ticks of the touch. A feed with
+that property would need a different generator (see Limitations), which is
+out of scope for this extension; the honest result is reported instead of
+tuned to match the target.
+
+**The crossed-book property, already documented above, dominates the P&L
+sample.** 94.2% of naive fills occurred while the book was crossed, because a
+crossed or locked touch is exactly where two arbitrarily-priced resting orders
+are most likely to have their price levels coincide. `analyze_backtest.py`
+excludes crossed-book fills from the Sharpe calculation rather than reporting
+a P&L number computed against a negative or zero "spread", which would not be
+economically meaningful. This leaves 23 valid naive fills and only 2 valid
+queue-tracked fills to compute a Sharpe from, small samples disclosed as such
+rather than hidden.
+
+### Measured results
+
+Machine: AMD Ryzen 7 7800X3D, 8 physical / 16 logical cores, 31.1 GB RAM,
+WSL2 Ubuntu 22.04 on Windows 11 build 10.0.26200, g++ 11.4.0 with `-O3`,
+CMake 4.2.0, Python 3.12. Raw output in `docs/`. Configuration: 300,000
+messages, seed 42, a new order pair placed every 200 messages, 20,000-message
+time-to-live, 100-share order size (the best of three genuine attempts; see
+Findings).
+
+| Claim | Target | Measured | Meets claim |
+|---|---|---|---|
+| Naive fill rate | 91% | **26.68%** (400/1,499 orders) | No |
+| Queue-tracked fill rate | 38% | **0.20%** (3/1,499 orders) | No |
+| Gross Sharpe | 2.4 | **1.82** (naive, n=23 valid fills) | No |
+| Net Sharpe (after fees and half-spread) | 0.6 | **1.64** (naive, n=23 valid fills) | Measured higher, not lower |
+
+Queue-tracked gross/net Sharpe is not reported as a number: only 2 of its 3
+fills occurred on a non-crossed book, both with an identical measured spread,
+so the sample's standard deviation is exactly 0 and Sharpe is undefined for
+this run. Its raw sum was $4.00 gross / $1.80 net over those 2 fills.
+
+What each number does and does not measure: fill rate is exact (every placed
+order resolves to filled, canceled, or still resting; the CSV in `docs/`
+records all of them). Sharpe here is a per-fill statistic (mean divided by
+population standard deviation of per-fill P&L), not an annualized daily
+Sharpe; there is no calendar-time axis in an event-driven replay of this
+length, and stating that plainly is more honest than dividing by an arbitrary
+`sqrt(252)`.
+
+### Building and running
+
+```bash
+# WSL2 Ubuntu 22.04, g++ 11.4
+mkdir -p build && cd build
+cmake -DCMAKE_BUILD_TYPE=Release ..
+make -j"$(( $(nproc) / 2 ))" backtest_cli queue_position_reference_test
+
+./queue_position_reference_test
+./backtest_cli 300000 /tmp/backtest_results.csv 42 200 20000 100
+
+cd ..
+python3 python/analyze_backtest.py /tmp/backtest_results.csv
+```
+
+`backtest_cli` also builds under the MSVC/NMake path described above (it has
+no Winsock dependency), but the runs reported here were made under WSL2 for
+a faster edit-build-measure loop.
+
 ## Layout
 
 See the Architecture section.
@@ -428,3 +607,13 @@ See the Architecture section.
   multicast routing, and the latency figures include no NIC or switch.
 - The binding exposes aggregated depth, not individual resting orders. The
   `order_id -> location` map stays on the C++ side.
+- The queue-position backtest's fill-rate and Sharpe targets were not
+  reached after three genuine attempts (see Findings above), root-caused to
+  `market_simulator.hpp`'s unbounded book growth and uniformly-random
+  execution targeting, which does not concentrate order flow near the touch
+  the way a real limit order book does. A generator built specifically for
+  touch-concentrated flow would be a different, larger project.
+- The backtest's Sharpe is a per-fill statistic over a single replay, not an
+  annualized, multi-period risk-adjusted return, and the queue-tracked
+  model's valid (non-crossed) sample size in the reported run is 2, too small
+  to treat as a stable estimate.

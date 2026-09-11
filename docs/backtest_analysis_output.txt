@@ -1,0 +1,19 @@
+                               naive   queue-tracked
+orders                          1499             400  (filled)
+fill rate                     26.68%
+orders                          1499               3  (filled)
+fill rate                      0.20%
+
+Note: the base repo's OrderBook is fed a synthetic stream with no matching
+logic (see README, 'what this is NOT'), so it is frequently crossed
+(best bid >= best ask) at an arbitrary instant; a crossed quote has no
+economically meaningful spread to capture, so P&L is computed only over
+fills observed while the book was NOT crossed. The crossed fraction is
+reported because it is itself the finding: this repo is a decoder and
+normalizer, not a matching engine, and never claimed to keep a crossless
+book.
+
+naive                    n_fills= 400  crossed_at_fill= 377 (94.2%)  n_valid=  23
+                         gross_sharpe=1.8212  net_sharpe=1.6430  gross_sum=$47.00  net_sum=$21.20
+queue                    n_fills=   3  crossed_at_fill=   1 (33.3%)  n_valid=   2
+                         gross_sharpe=nan  net_sharpe=nan  gross_sum=$4.00  net_sum=$1.80

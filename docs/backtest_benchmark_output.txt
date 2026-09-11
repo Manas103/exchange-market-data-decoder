@@ -1,0 +1,10 @@
+Queue-position backtest: 300000 messages, seed=42, placement_interval=200, ttl=20000, order_qty=100
+
+                              naive queue-tracked
+orders placed                  1499       1499
+filled                          400          3
+canceled (TTL)                  999       1396
+still resting at end            100        100
+fill rate                    26.68%      0.20%
+
+results written to /tmp/backtest_final.csv

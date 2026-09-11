@@ -18,6 +18,8 @@ include_directories(include)
 
 add_executable(decoder_bench src/decoder_bench.cpp)
 add_executable(correctness_test tests/correctness_test.cpp)
+add_executable(backtest_cli src/backtest_cli.cpp)
+add_executable(queue_position_reference_test tests/queue_position_reference_test.cpp)
 
 add_executable(live_multicast_demo src/live_multicast_demo.cpp)
 if(WIN32)
